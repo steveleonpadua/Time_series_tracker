@@ -137,6 +137,24 @@ def update_timezone_file(tz_df, path):
     combined.to_csv(path, index=False)
 
 
+def update_respondent_file(r_df, path):
+
+    r_df = r_df.sort_values("period")
+    if os.path.exists(path):
+        old = pd.read_csv(path)
+        old["period"] = pd.to_datetime(old["period"])
+        combined = pd.concat([old, r_df])
+        combined = combined.sort_values("period")
+        combined = combined.drop_duplicates(
+            subset=["period"],
+            keep="last"
+        )
+    else:
+        combined = r_df
+    combined.to_csv(path, index=False)
+    print("Updated respondent:", path)
+
+
 def save_by_timezone(df):
 
     os.makedirs("../data_processed/timezone", exist_ok=True)
@@ -152,7 +170,7 @@ def save_by_respondent(df):
     for r in df["respondent"].unique():
         r_df = df[df["respondent"] == r][["period", "value"]]
         path = f"../data_processed/respondent/{r}.csv"
-        update_timezone_file(r_df, path)
+        update_respondent_file(r_df, path)
 
 
 def run_pipeline():
