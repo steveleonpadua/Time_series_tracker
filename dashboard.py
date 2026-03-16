@@ -15,31 +15,10 @@ st.set_page_config(page_title="Energy Demand Dashboard", page_icon="⚡", layout
 def fetch_energy_data():
     """
     Simulates fetching data from your API.
-    Replace this with your actual requests.get(API_URL).json() logic.
     """
-    # NOTE: Replace the below with your API call:
+    # NOTE: Replace the below with the API call:
     # response = requests.get("https://api.your-energy-provider.com/data")
     # df = pd.DataFrame(response.json())
-    
-    # --- MOCK DATA GENERATION FOR DEMONSTRATION ---
-    dates = pd.date_range(end=datetime.today(), periods=90)
-    regions = ['North', 'South', 'East', 'West']
-    companies = ['EcoPower', 'GridMax', 'Solaris', 'NexGen']
-    
-    data = []
-    for d in dates:
-        for r in regions:
-            for c in companies:
-                base_demand = np.random.randint(100, 500)
-                data.append({
-                    'Date': d,
-                    'Region': r,
-                    'Company': c,
-                    'Demand_MW': base_demand + np.random.normal(0, 20)
-                })
-    
-    df = pd.DataFrame(data)
-    return df
 
 # --- 3. HELPER FUNCTIONS FOR MATPLOTLIB ---
 def plot_trend(df, title):
