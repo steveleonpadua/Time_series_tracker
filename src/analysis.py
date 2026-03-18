@@ -16,3 +16,8 @@ def clean_timeseries(df):
     df["value"] = df["value"].interpolate()
     
     return df
+
+# provenance tracking to be included in the ingestion script.
+# data versioning requires to keep the dataset as is, any updation needed to be created as a new dataset.
+# maybe keep around a year of data and delete as we go.
+
