@@ -188,7 +188,7 @@ so it always displays the latest pipeline results.
 # Author Contributions
 
 | Team Member | Responsibilities |
-|---|---|
+|----|----|
 | Akshat Agarwal | Data ingestion pipeline, API integration, revision detection |
 | Steve Leon Padua | Data analysis and validation |
 | Aatif Mashkoor | Streamlit dashboard |
