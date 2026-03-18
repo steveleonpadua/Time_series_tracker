@@ -68,6 +68,7 @@ src/
 ├── ingest.py              # Daily data ingestion pipeline
 ├── bootstrap_history.py   # Download historical data
 ├── dashboard.py           # Streamlit dashboard
+├── analysis.py            # Analysis of data (outliers)
 │
 data_raw/                  # Raw API snapshots
 │   raw_<date>.csv
