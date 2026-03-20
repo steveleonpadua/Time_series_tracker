@@ -220,6 +220,12 @@ def main():
         fig2, ax2 = plt.subplots(figsize=(10,4))
 
         region_demand = tz_df.groupby("Region")["Demand_MW"].sum().sort_values()
+        mean_val = region_demand.mean()
+        std_val = region_demand.std()
+        demand_offset = region_demand.min() - std_val
+        #region_demand = (region_demand - mean_val)/mean_val * 100
+        #region_demand = region_demand.sort_values()
+        region_demand = region_demand - demand_offset
 
         bars = ax2.barh(region_demand.index, region_demand.values, color="#FF4081")
 
@@ -232,15 +238,15 @@ def main():
             ax2.text(
                 width + offset,
                 bar.get_y() + bar.get_height()/2,
-                f"{width:,.0f}",
+                f"{width+demand_offset:,.0f}",
                 ha="left",
                 va="center",
                 color="white"
             )
-
+        #ax2.set_xlim(region_demand.min()-20, region_demand.max()+20)
         ax2.spines["top"].set_visible(False)
         ax2.spines["right"].set_visible(False)
-
+        ax2.xaxis.set_major_formatter(lambda x, pos: f"{x+demand_offset:.1e}")
         st.pyplot(fig2)
 
 
