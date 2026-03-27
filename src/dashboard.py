@@ -36,6 +36,13 @@ def clean_timeseries(df):
 
     return df
 
+def format_scientific(x):
+    if x == 0:
+        return "0"
+    exponent = int(np.floor(np.log10(abs(x))))
+    base = x / (10 ** exponent)
+    return f"{base:.2f} × 10^{exponent}"
+
 def load_processed_data():
 
     tz_dir = "../data_processed/timezone"
@@ -92,15 +99,35 @@ def aggregate_time(df, level):
 
 
 # -------------------------------
+# NEW: TIME-SERIES INDICATORS
+# -------------------------------
+def compute_indicators(df):
+
+    df = df.sort_values("Date")
+
+    df["rolling_mean_7"] = df["Demand_MW"].rolling(7).mean()
+    df["rolling_mean_30"] = df["Demand_MW"].rolling(30).mean()
+    df["rolling_std_7"] = df["Demand_MW"].rolling(7).std()
+
+    df["daily_growth"] = df["Demand_MW"].pct_change() * 100
+    df["weekly_growth"] = df["Demand_MW"].pct_change(7) * 100
+
+    df["diff_1"] = df["Demand_MW"].diff()
+    df["diff_7"] = df["Demand_MW"].diff(7)
+
+    return df
+
+# -------------------------------
 # TREND PLOT
 # -------------------------------
-def plot_trend(df, title, time_group):
+def plot_trend(df, title, time_group, rolling_window=None):
 
     plt.style.use("dark_background")
 
     fig, ax = plt.subplots(figsize=(10,4))
 
     data = aggregate_time(df, time_group)
+    data["Demand_MW"] = data["Demand_MW"].rolling(rolling_window).mean()
 
     ax.plot(data["Date"], data["Demand_MW"], color="#00E5FF", linewidth=2)
     ax.fill_between(data["Date"], data["Demand_MW"], color="#00E5FF", alpha=0.1)
@@ -209,11 +236,28 @@ def main():
 
     peak_date = pd.to_datetime(peak_date).strftime("%Y-%m-%d")
 
-    col1.metric("Total Demand", f"{total_demand:,.0f} MW")
-    col2.metric("Avg Daily Demand", f"{avg_daily:,.0f} MW")
-    col3.metric("Peak Demand", f"{peak_demand:,.0f} MW")
+    col1.metric("Total Demand", f"{format_scientific(total_demand)} MW")
+    col2.metric("Avg Daily Demand", f"{format_scientific(avg_daily)} MW")
+    col3.metric("Peak Demand", f"{format_scientific(peak_demand)} MW")
     col4.metric("Peak Demand Date", peak_date)
 
+    # --------------------------
+    # NEW KPI: Growth + Volatility
+    # --------------------------
+
+    st.subheader("Trend Indicators")
+
+    daily_series = resp_df.groupby("Date")["Demand_MW"].sum()
+
+    latest_growth = daily_series.pct_change().iloc[-1] * 100
+    weekly_growth = daily_series.pct_change(7).iloc[-1] * 100
+    volatility = daily_series.rolling(7).std().iloc[-1]
+
+    col5, col6, col7 = st.columns(3)
+
+    col5.metric("Daily Growth", f"{latest_growth:.2f}%")
+    col6.metric("Weekly Growth", f"{weekly_growth:.2f}%")
+    col7.metric("Volatility (7d)", f"{volatility:.2f}")
 
     # --------------------------
     # CHARTS ROW
@@ -227,12 +271,23 @@ def main():
     with col_chart1:
 
         st.subheader("Demand Trend")
+        
+        # --- NEW: Controls ---
+       
+        window = st.slider(
+            "Rolling Window (days)",
+            min_value=1,
+            max_value=7,
+            value=1
+        )
+
 
         fig1 = plot_trend(
             resp_df,
             "Aggregate Demand Over Time",
-            time_group
-        )
+            time_group,
+            rolling_window=window
+)
 
         st.pyplot(fig1)
 
@@ -365,7 +420,50 @@ def main():
         ax4.axis("equal")
 
         st.pyplot(fig4)
+    # --------------------------
+    # NEW: GROWTH ANALYSIS
+    # --------------------------
+    st.divider()
 
+    col_chart5, col_chart6 = st.columns(2)
+    with col_chart5:
+
+        
+        st.subheader("Growth Trends")
+
+        growth_df = aggregate_time(resp_df, time_group)
+        growth_df = compute_indicators(growth_df)
+
+        fig5, ax5 = plt.subplots(figsize=(10,4))
+
+        ax5.plot(growth_df["Date"], growth_df["daily_growth"], label="Daily Growth %")
+        ax5.plot(growth_df["Date"], growth_df["weekly_growth"], label="Weekly Growth %")
+
+        ax5.axhline(0, linestyle="--", color="white", alpha=0.5)
+
+        ax5.set_ylabel("Growth (%)")
+        ax5.legend()
+
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        st.pyplot(fig5)
+
+    with col_chart6:
+
+        st.subheader("Trend with Smoothing")
+
+        trend_df = aggregate_time(resp_df, time_group)
+        trend_df = compute_indicators(trend_df)
+
+        fig6, ax6 = plt.subplots(figsize=(10,4))
+
+        ax6.plot(trend_df["Date"], trend_df["Demand_MW"], alpha=0.3, label="Actual")
+        ax6.plot(trend_df["Date"], trend_df["rolling_mean_7"], label="7-day avg")
+        ax6.plot(trend_df["Date"], trend_df["rolling_mean_30"], label="30-day avg")
+
+        ax6.legend()
+        st.pyplot(fig6)
 
 if __name__ == "__main__":
     main()
