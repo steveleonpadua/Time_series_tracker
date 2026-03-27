@@ -11,6 +11,31 @@ st.set_page_config(page_title="Energy Demand Dashboard", page_icon="⚡", layout
 # LOAD DATA
 # -------------------------------
 @st.cache_data
+
+def clean_timeseries(df):
+
+    df['period'] = pd.to_datetime(df['period'])
+    df = df.sort_values("period")
+
+    full_range = pd.date_range(
+        start=df["period"].min(),
+        end=df["period"].max(),
+        freq="D"
+    )
+
+    df = df.set_index("period").reindex(full_range)
+    df.index.name = "period"
+    df = df.reset_index()
+
+    # outlier removal
+    z = (df["value"] - df["value"].mean()) / df["value"].std()
+    df.loc[abs(z) > 4, "value"] = np.nan
+
+    # interpolation
+    df["value"] = df["value"].interpolate()
+
+    return df
+
 def load_processed_data():
 
     tz_dir = "../data_processed/timezone"
@@ -22,6 +47,7 @@ def load_processed_data():
     for f in os.listdir(tz_dir):
 
         df = pd.read_csv(os.path.join(tz_dir, f))
+        df = clean_timeseries(df)
         df["Region"] = f.replace(".csv","")
         df["Date"] = pd.to_datetime(df["period"])
         df["Demand_MW"] = df["value"]
@@ -31,6 +57,7 @@ def load_processed_data():
     for f in os.listdir(resp_dir):
 
         df = pd.read_csv(os.path.join(resp_dir, f))
+        df = clean_timeseries(df)
         df["Company"] = f.replace(".csv","")
         df["Date"] = pd.to_datetime(df["period"])
         df["Demand_MW"] = df["value"]
