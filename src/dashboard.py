@@ -1,15 +1,63 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
 import os
 
 st.set_page_config(page_title="Energy Demand Dashboard", page_icon="⚡", layout="wide")
 
+# -------------------------------
+# 1. DATA PROCESSING FUNCTIONS
+# -------------------------------
+def clean_timeseries(df):
+    df['period'] = pd.to_datetime(df['period'])
+    df = df.sort_values("period")
 
-# -------------------------------
-# LOAD DATA
-# -------------------------------
+    full_range = pd.date_range(start=df["period"].min(), end=df["period"].max(), freq="D")
+    df = df.set_index("period").reindex(full_range).reset_index().rename(columns={"index": "period"})
+
+    # --- Missing BEFORE ---
+    missing_mask = df["value"].isna()
+    missing_dates = df.loc[missing_mask, "period"].dt.strftime("%Y-%m-%d").tolist()
+    missing_before = len(missing_dates)
+
+    # --- Outliers ---
+    z = (df["value"] - df["value"].mean()) / df["value"].std()
+    outlier_mask = abs(z) > 4
+    outlier_dates = df.loc[outlier_mask, "period"].dt.strftime("%Y-%m-%d").tolist()
+    outliers = len(outlier_dates)
+
+    df.loc[outlier_mask, "value"] = np.nan
+
+    # --- Interpolation ---
+    df["value"] = df["value"].interpolate()
+
+    missing_after = df["value"].isna().sum()
+
+    stats = {
+        "missing_before": int(missing_before),
+        "outliers_removed": int(outliers),
+        "missing_after": int(missing_after),
+        "missing_dates": missing_dates,
+        "outlier_dates": outlier_dates
+    }
+
+    return df, stats
+
+def format_power(x):
+    if pd.isna(x) or x == 0:
+        return "0 MW"
+    abs_x = abs(x)
+    if abs_x >= 1e9:
+        return f"{x / 1e9:.2f} PW"  # Petawatts
+    elif abs_x >= 1e6:
+        return f"{x / 1e6:.2f} TW"  # Terawatts
+    elif abs_x >= 1e3:
+        return f"{x / 1e3:.2f} GW"  # Gigawatts
+    else:
+        return f"{x:,.0f} MW"       # Megawatts
+
 @st.cache_data
 
 def clean_timeseries(df):
@@ -44,426 +92,393 @@ def format_scientific(x):
     return f"{base:.2f} × 10^{exponent}"
 
 def load_processed_data():
-
     tz_dir = "../data_processed/timezone"
     resp_dir = "../data_processed/respondent"
+    tz_frames, resp_frames = [], []
+    tz_stats, resp_stats = [], []
 
-    tz_frames = []
-    resp_frames = []
+    if os.path.exists(tz_dir):
+        for f in os.listdir(tz_dir):
+            if f.endswith(".csv"):
+                df = pd.read_csv(os.path.join(tz_dir, f))
+                df, stats = clean_timeseries(df)
+                df["Region"] = f.replace(".csv", "")
+                df["Date"] = pd.to_datetime(df["period"])
+                df["Demand_MW"] = df["value"]
+                tz_frames.append(df)
+                stats['Region'] = f.replace(".csv", "")
+                tz_stats.append(stats)
 
-    for f in os.listdir(tz_dir):
+    if os.path.exists(resp_dir):
+        for f in os.listdir(resp_dir):
+            if f.endswith(".csv"):
+                df = pd.read_csv(os.path.join(resp_dir, f))
+                df, stats = clean_timeseries(df)
+                df["Company"] = f.replace(".csv", "")
+                df["Date"] = pd.to_datetime(df["period"])
+                df["Demand_MW"] = df["value"]
+                resp_frames.append(df)
+                stats['Company'] = f.replace(".csv", "")
+                resp_stats.append(stats)
 
-        df = pd.read_csv(os.path.join(tz_dir, f))
-        df = clean_timeseries(df)
-        df["Region"] = f.replace(".csv","")
-        df["Date"] = pd.to_datetime(df["period"])
-        df["Demand_MW"] = df["value"]
+    tz_df = pd.concat(tz_frames) if tz_frames else pd.DataFrame(columns=["Date", "Region", "Demand_MW"])
+    resp_df = pd.concat(resp_frames) if resp_frames else pd.DataFrame(columns=["Date", "Company", "Demand_MW"])
+    return tz_df, resp_df,  pd.DataFrame(tz_stats), pd.DataFrame(resp_stats)
 
-        tz_frames.append(df)
-
-    for f in os.listdir(resp_dir):
-
-        df = pd.read_csv(os.path.join(resp_dir, f))
-        df = clean_timeseries(df)
-        df["Company"] = f.replace(".csv","")
-        df["Date"] = pd.to_datetime(df["period"])
-        df["Demand_MW"] = df["value"]
-
-        resp_frames.append(df)
-
-    tz_df = pd.concat(tz_frames)
-    resp_df = pd.concat(resp_frames)
-
-    return tz_df, resp_df
-
-
-# -------------------------------
-# TIME AGGREGATION
-# -------------------------------
 def aggregate_time(df, level):
-
     if level == "Daily":
         return df.groupby("Date")["Demand_MW"].sum().reset_index()
-
     if level == "Weekly":
         df["Week"] = df["Date"].dt.to_period("W").apply(lambda r: r.start_time)
         return df.groupby("Week")["Demand_MW"].sum().reset_index().rename(columns={"Week": "Date"})
-
     if level == "Monthly":
         df["Month"] = df["Date"].dt.to_period("M").apply(lambda r: r.start_time)
         return df.groupby("Month")["Demand_MW"].sum().reset_index().rename(columns={"Month": "Date"})
-
     if level == "Yearly":
         df["Year"] = df["Date"].dt.to_period("Y").apply(lambda r: r.start_time)
         return df.groupby("Year")["Demand_MW"].sum().reset_index().rename(columns={"Year": "Date"})
 
-
-# -------------------------------
-# NEW: TIME-SERIES INDICATORS
-# -------------------------------
-def compute_indicators(df):
-
-    df = df.sort_values("Date")
-
-    df["rolling_mean_7"] = df["Demand_MW"].rolling(7).mean()
-    df["rolling_mean_30"] = df["Demand_MW"].rolling(30).mean()
-    df["rolling_std_7"] = df["Demand_MW"].rolling(7).std()
-
-    df["daily_growth"] = df["Demand_MW"].pct_change() * 100
-    df["weekly_growth"] = df["Demand_MW"].pct_change(7) * 100
-
-    df["diff_1"] = df["Demand_MW"].diff()
-    df["diff_7"] = df["Demand_MW"].diff(7)
-
+def compute_daily_physics(df):
+    """Computes anomalies, YTD, and ramps strictly on daily data"""
+    df = df.sort_values("Date").copy()
+    
+    # 30-day rolling for anomalies
+    df["rolling_mean_30"] = df["Demand_MW"].rolling(30, min_periods=1).mean()
+    df["rolling_std_30"] = df["Demand_MW"].rolling(30, min_periods=1).std()
+    
+    df["z_score"] = (df["Demand_MW"] - df["rolling_mean_30"]) / df["rolling_std_30"].replace(0, np.nan)
+    df["is_anomaly"] = abs(df["z_score"]) > 3
+    
+    df["ramp_rate"] = df["Demand_MW"].diff()
+    df['Year'] = df['Date'].dt.year
+    df['DayOfYear'] = df['Date'].dt.dayofyear
+    df['Cumulative_Demand'] = df.groupby('Year')['Demand_MW'].cumsum()
     return df
 
 # -------------------------------
-# TREND PLOT
-# -------------------------------
-def plot_trend(df, title, time_group, rolling_window=None):
-
-    plt.style.use("dark_background")
-
-    fig, ax = plt.subplots(figsize=(10,4))
-
-    data = aggregate_time(df, time_group)
-    data["Demand_MW"] = data["Demand_MW"].rolling(rolling_window).mean()
-
-    ax.plot(data["Date"], data["Demand_MW"], color="#00E5FF", linewidth=2)
-    ax.fill_between(data["Date"], data["Demand_MW"], color="#00E5FF", alpha=0.1)
-
-    ax.set_title(title, loc="left")
-    ax.set_ylabel("Demand (MW)")
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
-
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_visible(False)
-
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    return fig
-
-
-# -------------------------------
-# MAIN APP
+# 2. MAIN APP & SIDEBAR
 # -------------------------------
 def main():
+    st.title("⚡ Advanced Energy Grid Analytics")
+    st.markdown("Comprehensive tracking, forecasting, and grid stress diagnostics.")
 
-    st.title("⚡ Energy Demand Tracker")
-    st.markdown("Monitoring electricity demand using the EIA dataset.")
+    with st.spinner("Loading and analyzing grid data..."):
+        tz_df, resp_df, tz_stats, resp_stats = load_processed_data()
 
-    with st.spinner("Loading dataset..."):
-        tz_df, resp_df = load_processed_data()
+    if resp_df.empty or tz_df.empty:
+        st.error("No data found! Please check your file paths.")
+        return
 
-    st.sidebar.header("Filters")
+    # ---- SIDEBAR FILTERS ----
+    st.sidebar.header("Filters & Controls")
 
-    # ---- DATE RANGE FILTER ----
-    min_date = resp_df["Date"].min()
-    max_date = resp_df["Date"].max()
-
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        [min_date, max_date],
-        min_value=min_date,
-        max_value=max_date
+    # NEW: The Perspective Toggle. This decides which dataset drives the main dashboard
+    analysis_mode = st.sidebar.radio(
+        "Primary Analysis Mode", 
+        ["Respondent (Company View)", "Timezone (Region View)"],
+        help="Select which dataset drives the Main KPIs, Overviews, and Anomalies."
     )
+
+    min_date, max_date = resp_df["Date"].min(), resp_df["Date"].max()
+    date_range = st.sidebar.date_input("Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
 
     if len(date_range) == 2:
-
         start_date, end_date = date_range
+        tz_df = tz_df[(tz_df["Date"] >= pd.to_datetime(start_date)) & (tz_df["Date"] <= pd.to_datetime(end_date))]
+        resp_df = resp_df[(resp_df["Date"] >= pd.to_datetime(start_date)) & (resp_df["Date"] <= pd.to_datetime(end_date))]
 
-        tz_df = tz_df[
-            (tz_df["Date"] >= pd.to_datetime(start_date)) &
-            (tz_df["Date"] <= pd.to_datetime(end_date))
-        ]
-
-        resp_df = resp_df[
-            (resp_df["Date"] >= pd.to_datetime(start_date)) &
-            (resp_df["Date"] <= pd.to_datetime(end_date))
-        ]
-
-
-    # ---- REGION FILTER ----
-    regions = tz_df["Region"].unique()
-
-    selected_regions = st.sidebar.multiselect(
-        "Timezone",
-        regions,
-        default=regions
-    )
-
+    selected_regions = st.sidebar.multiselect("Filter Regions", tz_df["Region"].unique(), default=tz_df["Region"].unique())
     tz_df = tz_df[tz_df["Region"].isin(selected_regions)]
 
-
-    # ---- RESPONDENT FILTER ----
-    companies = resp_df["Company"].unique()
-
-    selected_companies = st.sidebar.multiselect(
-        "Respondent",
-        companies,
-        default=companies
-    )
-
+    selected_companies = st.sidebar.multiselect("Filter Respondents", resp_df["Company"].unique(), default=resp_df["Company"].unique())
     resp_df = resp_df[resp_df["Company"].isin(selected_companies)]
 
+    time_group = st.sidebar.selectbox("Trend Aggregation Level", ["Daily", "Weekly", "Monthly", "Yearly"])
 
-    # ---- AGGREGATION LEVEL ----
-    time_group = st.sidebar.selectbox(
-        "Aggregation Level",
-        ["Daily","Weekly","Monthly","Yearly"]
-    )
+    # -------------------------------
+    # 3. DYNAMIC DATA ROUTING
+    # -------------------------------
+    # Set the master dataframe based on user's selected mode so filters actually work
+    master_df = resp_df.copy() if "Respondent" in analysis_mode else tz_df.copy()
 
+    # Apply aggregations to the selected master dataset
+    agg_data = aggregate_time(master_df, time_group)
+    agg_data = agg_data.sort_values("Date")
+    agg_data["Period_Growth_%"] = agg_data["Demand_MW"].pct_change() * 100 # Growth now respects Weekly/Monthly!
 
-    # --------------------------
-    # KPI METRICS
-    # --------------------------
+    daily_agg = master_df.groupby("Date")["Demand_MW"].sum().reset_index()
+    daily_agg = compute_daily_physics(daily_agg)
 
-    st.subheader("Key Statistics")
+    # -------------------------------
+    # 4. KPI METRICS
+    # -------------------------------
+    st.subheader(f"Grid Status Indicators ({analysis_mode.split(' ')[0]} Data)")
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    col1, col2, col3, col4 = st.columns(4)
+    total_demand = daily_agg["Demand_MW"].sum()
+    avg_daily = daily_agg["Demand_MW"].mean()
+    
+    if not daily_agg.empty:
+        peak_row = daily_agg.sort_values("Demand_MW", ascending=False).iloc[0]
+        peak_date = pd.to_datetime(peak_row["Date"]).strftime("%Y-%m-%d")
+        latest_growth = agg_data["Period_Growth_%"].iloc[-1]
+        total_anomalies = daily_agg["is_anomaly"].sum()
+    else:
+        peak_row = {"Demand_MW": 0}
+        latest_growth = np.nan
+        total_anomalies = 0
 
-    total_demand = resp_df["Demand_MW"].sum()
-    peak_demand = resp_df["Demand_MW"].max()
-    avg_daily = resp_df.groupby("Date")["Demand_MW"].sum().mean()
-
-    peak_row = resp_df.loc[resp_df["Demand_MW"].idxmax()]
-
-    peak_date = peak_row["Date"]
-    if isinstance(peak_date, pd.Series):
-        peak_date = peak_date.iloc[0]
-
-    peak_date = pd.to_datetime(peak_date).strftime("%Y-%m-%d")
-
-    col1.metric("Total Demand", f"{format_scientific(total_demand)} MW")
-    col2.metric("Avg Daily Demand", f"{format_scientific(avg_daily)} MW")
-    col3.metric("Peak Demand", f"{format_scientific(peak_demand)} MW")
-    col4.metric("Peak Demand Date", peak_date)
-
-    # --------------------------
-    # NEW KPI: Growth + Volatility
-    # --------------------------
-
-    st.subheader("Trend Indicators")
-
-    daily_series = resp_df.groupby("Date")["Demand_MW"].sum()
-
-    latest_growth = daily_series.pct_change().iloc[-1] * 100
-    weekly_growth = daily_series.pct_change(7).iloc[-1] * 100
-    volatility = daily_series.rolling(7).std().iloc[-1]
-
-    col5, col6, col7 = st.columns(3)
-
-    col5.metric("Daily Growth", f"{latest_growth:.2f}%")
-    col6.metric("Weekly Growth", f"{weekly_growth:.2f}%")
-    col7.metric("Volatility (7d)", f"{volatility:.2f}")
-
-    # --------------------------
-    # CHARTS ROW
-    # --------------------------
+    col1.metric("Total Demand", format_power(total_demand))
+    col2.metric("Avg Daily Load", format_power(avg_daily))
+    col3.metric("Peak Demand", format_power(peak_row['Demand_MW']))
+    col4.metric(f"Latest Growth ({time_group})", f"{latest_growth:.2f}%" if pd.notna(latest_growth) else "N/A")
+    col5.metric("Anomalies Detected", f"{total_anomalies} Days")
 
     st.divider()
 
-    col_chart1, col_chart2 = st.columns(2)
+    # -------------------------------
+    # 5. TABBED DASHBOARD
+    # -------------------------------
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📈 Trends & Growth", "📅 Seasonality & YTD", "🌍 Deep Dive: Regions", 
+        "🏢 Deep Dive: Companies", "⚡ Grid Physics & Anomalies", "💾 Data Export"
+    ])
 
-    # ---- DEMAND TREND ----
-    with col_chart1:
-
-        st.subheader("Demand Trend")
+    # ---- TAB 1: TRENDS & GROWTH ----
+    with tab1:
+        st.subheader(f"Aggregate Demand ({time_group})")
+        window = st.slider("Smoothing Window (Moving Average)", min_value=1, max_value=30, value=7)
         
-        # --- NEW: Controls ---
-       
-        window = st.slider(
-            "Rolling Window (days)",
-            min_value=1,
-            max_value=7,
-            value=1
-        )
+        plot_data = agg_data.copy()
+        plot_data["Smoothed_Demand"] = plot_data["Demand_MW"].rolling(window, min_periods=1).mean()
+        
+        fig1 = px.line(plot_data, x="Date", y=["Demand_MW", "Smoothed_Demand"], template="plotly_dark",
+                       color_discrete_sequence=["rgba(0, 229, 255, 0.3)", "#FF4081"],
+                       labels={"value": "Demand (MW)", "variable": "Metric"})
+        fig1.update_layout(hovermode="x unified", legend_title="")
+        st.plotly_chart(fig1, use_container_width=True)
 
+        col_trend1, col_trend2 = st.columns(2)
+        with col_trend1:
+            st.subheader(f"Growth Trends ({time_group})")
+            fig_growth = px.bar(agg_data, x="Date", y="Period_Growth_%", template="plotly_dark",
+                                 color="Period_Growth_%", color_continuous_scale="RdBu_r")
+            fig_growth.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
+            st.plotly_chart(fig_growth, use_container_width=True)
 
-        fig1 = plot_trend(
-            resp_df,
-            "Aggregate Demand Over Time",
-            time_group,
-            rolling_window=window
-)
+        with col_trend2:
+            st.subheader("Average Demand by Day of Week")
+            dow_df = daily_agg.copy()
+            dow_df['DayOfWeek'] = dow_df['Date'].dt.day_name()
+            dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            dow_demand = dow_df.groupby('DayOfWeek')['Demand_MW'].mean().reindex(dow_order).reset_index()
+            
+            fig_dow = px.bar(dow_demand, x="DayOfWeek", y="Demand_MW", template="plotly_dark", 
+                             color_discrete_sequence=["#B388FF"], text_auto=".2s")
+            st.plotly_chart(fig_dow, use_container_width=True)
 
-        st.pyplot(fig1)
+    # ---- TAB 2: SEASONALITY & YTD ----
+    with tab2:
+        col_seas1, col_seas2 = st.columns(2)
+        
+        with col_seas1:
+            st.subheader("Cumulative YTD Trajectory")
+            daily_agg['Year_Str'] = daily_agg['Year'].astype(str)
+            fig_ytd = px.line(daily_agg, x="DayOfYear", y="Cumulative_Demand", color="Year_Str", 
+                              template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_ytd.update_layout(xaxis_title="Day of Year", yaxis_title="Total MW Consumed")
+            st.plotly_chart(fig_ytd, use_container_width=True)
 
+        with col_seas2:
+            st.subheader("Year-over-Year (YoY) Overlay")
+            yoy_df = daily_agg.copy()
+            yoy_df['DummyDate'] = yoy_df['Date'].apply(lambda d: d.replace(year=2024))
+            fig_yoy = px.line(yoy_df, x="DummyDate", y="Demand_MW", color="Year_Str", 
+                              template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Set2)
+            fig_yoy.update_layout(xaxis_tickformat="%b %d", xaxis_title="Time of Year", yaxis_title="Daily Demand (MW)")
+            st.plotly_chart(fig_yoy, use_container_width=True)
 
-    # ---- DEMAND BY REGION ----
-    with col_chart2:
+        st.divider()
+        st.subheader("Seasonal Heatmap (Usage Patterns)")
+        heat_df = daily_agg.copy()
+        heat_df['Month'] = heat_df['Date'].dt.month_name()
+        heat_df['DOW'] = heat_df['Date'].dt.day_name()
+        
+        month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+        dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        
+        fig_heat = px.density_heatmap(heat_df, x="Month", y="DOW", z="Demand_MW", histfunc="avg",
+                                      template="plotly_dark", color_continuous_scale="Viridis",
+                                      category_orders={"Month": month_order, "DOW": dow_order[::-1]})
+        st.plotly_chart(fig_heat, use_container_width=True)
 
-        st.subheader("Demand by Region")
+    # ---- TAB 3: REGIONAL MATRIX ----
+    with tab3:
+        st.subheader("Total Demand by Region")
+        region_demand = tz_df.groupby("Region")["Demand_MW"].sum().reset_index().sort_values("Demand_MW")
+        fig_reg_bar = px.bar(region_demand, x="Demand_MW", y="Region", orientation="h", template="plotly_dark", 
+                             color_discrete_sequence=["#FF4081"], text_auto=".2s")
+        st.plotly_chart(fig_reg_bar, use_container_width=True)
 
-        plt.style.use("dark_background")
+        col_reg1, col_reg2 = st.columns(2)
+        with col_reg1:
+            st.subheader("Regional Volatility (Box Plot)")
+            fig_box_reg = px.box(tz_df, x="Region", y="Demand_MW", color="Region", template="plotly_dark")
+            fig_box_reg.update_layout(showlegend=False)
+            st.plotly_chart(fig_box_reg, use_container_width=True)
 
-        fig2, ax2 = plt.subplots(figsize=(10,4))
+        with col_reg2:
+            st.subheader("Grid Stress (Regional Correlation)")
+            pivot_tz = tz_df.pivot_table(index="Date", columns="Region", values="Demand_MW", aggfunc="sum")
+            fig_corr = px.imshow(pivot_tz.corr(), text_auto=".2f", aspect="auto", template="plotly_dark", color_continuous_scale="RdBu_r")
+            st.plotly_chart(fig_corr, use_container_width=True)
 
-        region_demand = tz_df.groupby("Region")["Demand_MW"].sum().sort_values()
-        mean_val = region_demand.mean()
-        std_val = region_demand.std()
-        demand_offset = region_demand.min() - std_val
-        #region_demand = (region_demand - mean_val)/mean_val * 100
-        #region_demand = region_demand.sort_values()
-        region_demand = region_demand - demand_offset
+    # ---- TAB 4: COMPANY / MARKET SHARE ----
+    with tab4:
+        col_comp1, col_comp2 = st.columns([2, 1])
 
-        bars = ax2.barh(region_demand.index, region_demand.values, color="#FF4081")
+        with col_comp1:
+            st.subheader("Demand Contribution by Top Respondents")
+            pivot_resp = resp_df.pivot_table(index="Date", columns="Company", values="Demand_MW", aggfunc="sum").fillna(0)
+            if not pivot_resp.empty:
+                top_companies = pivot_resp.sum().sort_values(ascending=False).head(8).index
+                top_df = pivot_resp[top_companies].copy()
+                top_df["Others"] = pivot_resp.drop(columns=top_companies, errors='ignore').sum(axis=1)
+                top_df = top_df.reset_index()
+                
+                fig_area = px.area(top_df, x="Date", y=top_df.columns[1:], template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig_area.update_layout(yaxis_title="Demand (MW)", hovermode="x unified")
+                st.plotly_chart(fig_area, use_container_width=True)
 
-        offset = region_demand.max() * 0.02
+        with col_comp2:
+            st.subheader("Market Share")
+            company_shares = resp_df.groupby("Company")["Demand_MW"].sum().sort_values(ascending=False)
+            if not company_shares.empty:
+                top_shares = company_shares.head(8)
+                others = company_shares.iloc[8:].sum()
+                if others > 0: top_shares["Others"] = others
+                    
+                fig_pie = px.pie(names=top_shares.index, values=top_shares.values, hole=0.65, template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie.update_layout(showlegend=False)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+        st.subheader("Company Volatility")
+        if not pivot_resp.empty:
+            top_resp_df = resp_df[resp_df["Company"].isin(top_companies)]
+            fig_box_comp = px.box(top_resp_df, x="Company", y="Demand_MW", color="Company", template="plotly_dark")
+            fig_box_comp.update_layout(showlegend=False)
+            st.plotly_chart(fig_box_comp, use_container_width=True)
 
-        for bar in bars:
+    # ---- TAB 5: GRID PHYSICS & ANOMALIES ----
+    with tab5:
+        st.subheader(f"Automated Anomaly Detection ({analysis_mode.split(' ')[0]} Data)")
+        fig_anom = go.Figure()
+        fig_anom.add_trace(go.Scatter(x=daily_agg["Date"], y=daily_agg["Demand_MW"], name="Standard Demand", line=dict(color="#00E5FF")))
+        
+        anomalies = daily_agg[daily_agg["is_anomaly"]]
+        fig_anom.add_trace(go.Scatter(x=anomalies["Date"], y=anomalies["Demand_MW"], mode="markers", 
+                                     name="Anomaly (>3 Std Dev)", marker=dict(color="red", size=8)))
+        fig_anom.update_layout(template="plotly_dark", hovermode="x unified")
+        st.plotly_chart(fig_anom, use_container_width=True)
 
-            width = bar.get_width()
+        col_phys1, col_phys2 = st.columns(2)
+        with col_phys1:
+            st.subheader("Load Duration Curve (LDC)")
+            st.caption("Percentage of time demand exceeds a given level.")
+            ldc_data = daily_agg["Demand_MW"].sort_values(ascending=False).values
+            if len(ldc_data) > 0:
+                ldc_p = np.linspace(0, 100, len(ldc_data))
+                fig_ldc = px.line(x=ldc_p, y=ldc_data, template="plotly_dark", color_discrete_sequence=["#FF4081"], labels={"x": "% of Time", "y": "Demand (MW)"})
+                fig_ldc.add_hline(y=ldc_data.min(), line_dash="dash", annotation_text="Base Load")
+                st.plotly_chart(fig_ldc, use_container_width=True)
 
-            ax2.text(
-                width + offset,
-                bar.get_y() + bar.get_height()/2,
-                f"{width+demand_offset:,.0f}",
-                ha="left",
-                va="center",
-                color="white"
+        with col_phys2:
+            st.subheader("Day-to-Day Ramp Rates")
+            st.caption("Absolute change in demand from the previous day.")
+            fig_ramp = px.bar(daily_agg, x="Date", y="ramp_rate", template="plotly_dark", color="ramp_rate", color_continuous_scale="RdBu_r")
+            fig_ramp.update_layout(yaxis_title="MW Change vs Previous Day")
+            st.plotly_chart(fig_ramp, use_container_width=True)
+
+    # ---- TAB 6: DATA EXPORT ----
+    with tab6:
+        st.subheader("Raw Data Export")
+        st.write("Download the filtered dataset based on your sidebar selections.")
+        
+        col_data1, col_data2 = st.columns(2)
+        with col_data1:
+            st.dataframe(resp_df.head(100), use_container_width=True)
+            csv_resp = resp_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Respondent Data (CSV)", data=csv_resp, file_name="filtered_respondent_data.csv", mime="text/csv")
+            
+        with col_data2:
+            st.dataframe(tz_df.head(100), use_container_width=True)
+            csv_tz = tz_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Timezone Data (CSV)", data=csv_tz, file_name="filtered_timezone_data.csv", mime="text/csv")
+
+        st.subheader("Data Quality Report")
+
+        col_q1, col_q2, col_q3 = st.columns(3)
+
+        col_q1.metric("Missing Values (Before)", int(resp_stats["missing_before"].sum()))
+        col_q2.metric("Outliers Removed", int(resp_stats["outliers_removed"].sum()))
+        col_q3.metric("Remaining Missing", int(resp_stats["missing_after"].sum()))
+
+        with st.expander("Detailed Respondent Data Quality"):
+            st.dataframe(resp_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
+
+            selected_company = st.selectbox(
+                "Select Company to View Affected Dates",
+                resp_stats["Company"]
             )
-        #ax2.set_xlim(region_demand.min()-20, region_demand.max()+20)
-        ax2.spines["top"].set_visible(False)
-        ax2.spines["right"].set_visible(False)
-        ax2.xaxis.set_major_formatter(lambda x, pos: f"{x+demand_offset:.1e}")
-        st.pyplot(fig2)
 
+            row = resp_stats[resp_stats["Company"] == selected_company].iloc[0]
 
-    # --------------------------
-    # COMPANY ANALYSIS
-    # --------------------------
+            st.write("**Missing Dates:**")
+            st.write(row["missing_dates"] if row["missing_dates"] else "None")
 
-    st.divider()
+            st.write("**Outlier Dates:**")
+            st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
 
-    st.subheader("Company Performance")
+        with st.expander("Detailed Region Data Quality"):
+            st.dataframe(tz_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
 
-    col_chart3, col_chart4 = st.columns([2,1])
+            selected_region = st.selectbox(
+                "Select Region to View Affected Dates",
+                tz_stats["Region"]
+            )
 
+            row = tz_stats[tz_stats["Region"] == selected_region].iloc[0]
 
-    # ---- COMPANY TREND ----
-    with col_chart3:
+            st.write("**Missing Dates:**")
+            st.write(row["missing_dates"] if row["missing_dates"] else "None")
 
-        st.write("Demand Contribution by Major Respondents")
+            st.write("**Outlier Dates:**")
+            st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
 
-        fig3, ax3 = plt.subplots(figsize=(12,5))
+        resp_stats_export = resp_stats.copy()
+        resp_stats_export["missing_dates"] = resp_stats_export["missing_dates"].apply(lambda x: ",".join(x))
+        resp_stats_export["outlier_dates"] = resp_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
+        quality_csv = resp_stats_export.to_csv(index=False).encode('utf-8')
 
-        pivot_df = resp_df.pivot_table(
-            index="Date",
-            columns="Company",
-            values="Demand_MW",
-            aggfunc="sum"
+        st.download_button(
+            "Download Data Quality Report (Respondent)",
+            data=quality_csv,
+            file_name="data_quality_respondent.csv",
+            mime="text/csv"
+        )
+        tz_stats_export = tz_stats.copy()
+        tz_stats_export["missing_dates"] = tz_stats_export["missing_dates"].apply(lambda x: ",".join(x))
+        tz_stats_export["outlier_dates"] = tz_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
+        quality_csv_tz = tz_stats_export.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            "Download Data Quality Report (Region)",
+            data=quality_csv_tz,
+            file_name="data_quality_region.csv",
+            mime="text/csv"
         )
 
-        totals = pivot_df.sum().sort_values(ascending=False)
-
-        top_n = 8
-        top_companies = totals.head(top_n).index
-
-        top_df = pivot_df[top_companies]
-
-        others = pivot_df.drop(columns=top_companies).sum(axis=1)
-
-        top_df["Others"] = others
-
-        top_df.plot.area(
-            ax=ax3,
-            alpha=0.8,
-            colormap="viridis"
-        )
-
-        ax3.set_ylabel("Demand (MW)")
-        ax3.legend(loc="upper left")
-
-        ax3.spines["top"].set_visible(False)
-        ax3.spines["right"].set_visible(False)
-
-        st.pyplot(fig3)
-
-
-    # ---- MARKET SHARE ----
-    with col_chart4:
-
-        st.write("Market Share (Top Operators)")
-
-        fig4, ax4 = plt.subplots()
-
-        company_shares = resp_df.groupby("Company")["Demand_MW"].sum()
-
-        company_shares = company_shares.sort_values(ascending=False)
-
-        top_n = 8
-        top_companies = company_shares[:top_n]
-
-        others = company_shares[top_n:].sum()
-
-        if others > 0:
-            top_companies["Others"] = others
-
-        colors = plt.cm.viridis(np.linspace(0,1,len(top_companies)))
-
-        ax4.pie(
-            top_companies,
-            labels=top_companies.index,
-            autopct="%1.1f%%",
-            startangle=140,
-            colors=colors,
-            pctdistance=0.8
-        )
-
-        centre_circle = plt.Circle((0,0),0.65,fc="#0E1117")
-
-        fig4.gca().add_artist(centre_circle)
-
-        ax4.axis("equal")
-
-        st.pyplot(fig4)
-    # --------------------------
-    # NEW: GROWTH ANALYSIS
-    # --------------------------
-    st.divider()
-
-    col_chart5, col_chart6 = st.columns(2)
-    with col_chart5:
-
-        
-        st.subheader("Growth Trends")
-
-        growth_df = aggregate_time(resp_df, time_group)
-        growth_df = compute_indicators(growth_df)
-
-        fig5, ax5 = plt.subplots(figsize=(10,4))
-
-        ax5.plot(growth_df["Date"], growth_df["daily_growth"], label="Daily Growth %")
-        ax5.plot(growth_df["Date"], growth_df["weekly_growth"], label="Weekly Growth %")
-
-        ax5.axhline(0, linestyle="--", color="white", alpha=0.5)
-
-        ax5.set_ylabel("Growth (%)")
-        ax5.legend()
-
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-
-        st.pyplot(fig5)
-
-    with col_chart6:
-
-        st.subheader("Trend with Smoothing")
-
-        trend_df = aggregate_time(resp_df, time_group)
-        trend_df = compute_indicators(trend_df)
-
-        fig6, ax6 = plt.subplots(figsize=(10,4))
-
-        ax6.plot(trend_df["Date"], trend_df["Demand_MW"], alpha=0.3, label="Actual")
-        ax6.plot(trend_df["Date"], trend_df["rolling_mean_7"], label="7-day avg")
-        ax6.plot(trend_df["Date"], trend_df["rolling_mean_30"], label="30-day avg")
-
-        ax6.legend()
-        st.pyplot(fig6)
 
 if __name__ == "__main__":
     main()
