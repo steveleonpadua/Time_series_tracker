@@ -13,13 +13,37 @@ st.set_page_config(page_title="Energy Demand Dashboard", page_icon="⚡", layout
 def clean_timeseries(df):
     df['period'] = pd.to_datetime(df['period'])
     df = df.sort_values("period")
+
     full_range = pd.date_range(start=df["period"].min(), end=df["period"].max(), freq="D")
     df = df.set_index("period").reindex(full_range).reset_index().rename(columns={"index": "period"})
 
+    # --- Missing BEFORE ---
+    missing_mask = df["value"].isna()
+    missing_dates = df.loc[missing_mask, "period"].dt.strftime("%Y-%m-%d").tolist()
+    missing_before = len(missing_dates)
+
+    # --- Outliers ---
     z = (df["value"] - df["value"].mean()) / df["value"].std()
-    df.loc[abs(z) > 4, "value"] = np.nan
+    outlier_mask = abs(z) > 4
+    outlier_dates = df.loc[outlier_mask, "period"].dt.strftime("%Y-%m-%d").tolist()
+    outliers = len(outlier_dates)
+
+    df.loc[outlier_mask, "value"] = np.nan
+
+    # --- Interpolation ---
     df["value"] = df["value"].interpolate()
-    return df
+
+    missing_after = df["value"].isna().sum()
+
+    stats = {
+        "missing_before": int(missing_before),
+        "outliers_removed": int(outliers),
+        "missing_after": int(missing_after),
+        "missing_dates": missing_dates,
+        "outlier_dates": outlier_dates
+    }
+
+    return df, stats
 
 def format_power(x):
     if pd.isna(x) or x == 0:
@@ -39,30 +63,35 @@ def load_processed_data():
     tz_dir = "../data_processed/timezone"
     resp_dir = "../data_processed/respondent"
     tz_frames, resp_frames = [], []
+    tz_stats, resp_stats = [], []
 
     if os.path.exists(tz_dir):
         for f in os.listdir(tz_dir):
             if f.endswith(".csv"):
                 df = pd.read_csv(os.path.join(tz_dir, f))
-                df = clean_timeseries(df)
+                df, stats = clean_timeseries(df)
                 df["Region"] = f.replace(".csv", "")
                 df["Date"] = pd.to_datetime(df["period"])
                 df["Demand_MW"] = df["value"]
                 tz_frames.append(df)
+                stats['Region'] = f.replace(".csv", "")
+                tz_stats.append(stats)
 
     if os.path.exists(resp_dir):
         for f in os.listdir(resp_dir):
             if f.endswith(".csv"):
                 df = pd.read_csv(os.path.join(resp_dir, f))
-                df = clean_timeseries(df)
+                df, stats = clean_timeseries(df)
                 df["Company"] = f.replace(".csv", "")
                 df["Date"] = pd.to_datetime(df["period"])
                 df["Demand_MW"] = df["value"]
                 resp_frames.append(df)
+                stats['Company'] = f.replace(".csv", "")
+                resp_stats.append(stats)
 
     tz_df = pd.concat(tz_frames) if tz_frames else pd.DataFrame(columns=["Date", "Region", "Demand_MW"])
     resp_df = pd.concat(resp_frames) if resp_frames else pd.DataFrame(columns=["Date", "Company", "Demand_MW"])
-    return tz_df, resp_df
+    return tz_df, resp_df,  pd.DataFrame(tz_stats), pd.DataFrame(resp_stats)
 
 def aggregate_time(df, level):
     if level == "Daily":
@@ -102,7 +131,7 @@ def main():
     st.markdown("Comprehensive tracking, forecasting, and grid stress diagnostics.")
 
     with st.spinner("Loading and analyzing grid data..."):
-        tz_df, resp_df = load_processed_data()
+        tz_df, resp_df, tz_stats, resp_stats = load_processed_data()
 
     if resp_df.empty or tz_df.empty:
         st.error("No data found! Please check your file paths.")
@@ -354,6 +383,70 @@ def main():
             st.dataframe(tz_df.head(100), use_container_width=True)
             csv_tz = tz_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Timezone Data (CSV)", data=csv_tz, file_name="filtered_timezone_data.csv", mime="text/csv")
+
+        st.subheader("Data Quality Report")
+
+        col_q1, col_q2, col_q3 = st.columns(3)
+
+        col_q1.metric("Missing Values (Before)", int(resp_stats["missing_before"].sum()))
+        col_q2.metric("Outliers Removed", int(resp_stats["outliers_removed"].sum()))
+        col_q3.metric("Remaining Missing", int(resp_stats["missing_after"].sum()))
+
+        with st.expander("Detailed Respondent Data Quality"):
+            st.dataframe(resp_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
+
+            selected_company = st.selectbox(
+                "Select Company to View Affected Dates",
+                resp_stats["Company"]
+            )
+
+            row = resp_stats[resp_stats["Company"] == selected_company].iloc[0]
+
+            st.write("**Missing Dates:**")
+            st.write(row["missing_dates"] if row["missing_dates"] else "None")
+
+            st.write("**Outlier Dates:**")
+            st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
+
+        with st.expander("Detailed Region Data Quality"):
+            st.dataframe(tz_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
+
+            selected_region = st.selectbox(
+                "Select Region to View Affected Dates",
+                tz_stats["Region"]
+            )
+
+            row = tz_stats[tz_stats["Region"] == selected_region].iloc[0]
+
+            st.write("**Missing Dates:**")
+            st.write(row["missing_dates"] if row["missing_dates"] else "None")
+
+            st.write("**Outlier Dates:**")
+            st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
+
+        resp_stats_export = resp_stats.copy()
+        resp_stats_export["missing_dates"] = resp_stats_export["missing_dates"].apply(lambda x: ",".join(x))
+        resp_stats_export["outlier_dates"] = resp_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
+        quality_csv = resp_stats_export.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            "Download Data Quality Report (Respondent)",
+            data=quality_csv,
+            file_name="data_quality_respondent.csv",
+            mime="text/csv"
+        )
+        tz_stats_export = tz_stats.copy()
+        tz_stats_export["missing_dates"] = tz_stats_export["missing_dates"].apply(lambda x: ",".join(x))
+        tz_stats_export["outlier_dates"] = tz_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
+        quality_csv_tz = tz_stats_export.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            "Download Data Quality Report (Region)",
+            data=quality_csv_tz,
+            file_name="data_quality_region.csv",
+            mime="text/csv"
+        )
+
 
 if __name__ == "__main__":
     main()
