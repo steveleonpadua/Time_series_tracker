@@ -59,38 +59,6 @@ def format_power(x):
         return f"{x:,.0f} MW"       # Megawatts
 
 @st.cache_data
-
-def clean_timeseries(df):
-
-    df['period'] = pd.to_datetime(df['period'])
-    df = df.sort_values("period")
-
-    full_range = pd.date_range(
-        start=df["period"].min(),
-        end=df["period"].max(),
-        freq="D"
-    )
-
-    df = df.set_index("period").reindex(full_range)
-    df.index.name = "period"
-    df = df.reset_index()
-
-    # outlier removal
-    z = (df["value"] - df["value"].mean()) / df["value"].std()
-    df.loc[abs(z) > 4, "value"] = np.nan
-
-    # interpolation
-    df["value"] = df["value"].interpolate()
-
-    return df
-
-def format_scientific(x):
-    if x == 0:
-        return "0"
-    exponent = int(np.floor(np.log10(abs(x))))
-    base = x / (10 ** exponent)
-    return f"{base:.2f} × 10^{exponent}"
-
 def load_processed_data():
     tz_dir = "../data_processed/timezone"
     resp_dir = "../data_processed/respondent"
