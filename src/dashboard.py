@@ -140,7 +140,6 @@ def main():
     # ---- SIDEBAR FILTERS ----
     st.sidebar.header("Filters & Controls")
 
-    # NEW: The Perspective Toggle. This decides which dataset drives the main dashboard
     analysis_mode = st.sidebar.radio(
         "Primary Analysis Mode", 
         ["Respondent (Company View)", "Timezone (Region View)"],
@@ -148,31 +147,49 @@ def main():
     )
 
     min_date, max_date = resp_df["Date"].min(), resp_df["Date"].max()
-    date_range = st.sidebar.date_input("Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
+    date_range = st.sidebar.date_input(
+        "Date Range", 
+        [min_date, max_date], 
+        min_value=min_date, 
+        max_value=max_date,
+        help="Restrict all dashboard calculations to a specific time window."
+    )
 
     if len(date_range) == 2:
         start_date, end_date = date_range
         tz_df = tz_df[(tz_df["Date"] >= pd.to_datetime(start_date)) & (tz_df["Date"] <= pd.to_datetime(end_date))]
         resp_df = resp_df[(resp_df["Date"] >= pd.to_datetime(start_date)) & (resp_df["Date"] <= pd.to_datetime(end_date))]
 
-    selected_regions = st.sidebar.multiselect("Filter Regions", tz_df["Region"].unique(), default=tz_df["Region"].unique())
+    selected_regions = st.sidebar.multiselect(
+        "Filter Regions", 
+        tz_df["Region"].unique(), 
+        default=tz_df["Region"].unique(),
+        help="Include or exclude specific timezones/regions from the map and correlation matrices."
+    )
     tz_df = tz_df[tz_df["Region"].isin(selected_regions)]
 
-    selected_companies = st.sidebar.multiselect("Filter Respondents", resp_df["Company"].unique(), default=resp_df["Company"].unique())
+    selected_companies = st.sidebar.multiselect(
+        "Filter Respondents", 
+        resp_df["Company"].unique(), 
+        default=resp_df["Company"].unique(),
+        help="Include or exclude specific energy utility companies from the market share and trend charts."
+    )
     resp_df = resp_df[resp_df["Company"].isin(selected_companies)]
 
-    time_group = st.sidebar.selectbox("Trend Aggregation Level", ["Daily", "Weekly", "Monthly", "Yearly"])
+    time_group = st.sidebar.selectbox(
+        "Trend Aggregation Level", 
+        ["Daily", "Weekly", "Monthly", "Yearly"],
+        help="Roll up the data to view macro trends. Note: Grid Physics and Anomaly charts always remain Daily to preserve mathematical accuracy."
+    )
 
     # -------------------------------
     # 3. DYNAMIC DATA ROUTING
     # -------------------------------
-    # Set the master dataframe based on user's selected mode so filters actually work
     master_df = resp_df.copy() if "Respondent" in analysis_mode else tz_df.copy()
 
-    # Apply aggregations to the selected master dataset
     agg_data = aggregate_time(master_df, time_group)
     agg_data = agg_data.sort_values("Date")
-    agg_data["Period_Growth_%"] = agg_data["Demand_MW"].pct_change() * 100 # Growth now respects Weekly/Monthly!
+    agg_data["Period_Growth_%"] = agg_data["Demand_MW"].pct_change() * 100 
 
     daily_agg = master_df.groupby("Date")["Demand_MW"].sum().reset_index()
     daily_agg = compute_daily_physics(daily_agg)
@@ -198,7 +215,7 @@ def main():
 
     col1.metric("Total Demand", format_power(total_demand))
     col2.metric("Avg Daily Load", format_power(avg_daily))
-    col3.metric("Peak Demand", format_power(peak_row['Demand_MW']))
+    col3.metric("Peak Demand", format_power(peak_row['Demand_MW']), help=f"Recorded on {peak_date}")
     col4.metric(f"Latest Growth ({time_group})", f"{latest_growth:.2f}%" if pd.notna(latest_growth) else "N/A")
     col5.metric("Anomalies Detected", f"{total_anomalies} Days")
 
@@ -214,35 +231,43 @@ def main():
 
     # ---- TAB 1: TRENDS & GROWTH ----
     with tab1:
-        st.subheader(f"Aggregate Demand ({time_group})")
+        st.subheader(f"Aggregate Demand ({time_group})", help="Visualizes total energy demand over time based on your selected aggregation level.")
         window = st.slider("Smoothing Window (Moving Average)", min_value=1, max_value=30, value=7)
         
         plot_data = agg_data.copy()
         plot_data["Smoothed_Demand"] = plot_data["Demand_MW"].rolling(window, min_periods=1).mean()
         
-        fig1 = px.line(plot_data, x="Date", y=["Demand_MW", "Smoothed_Demand"], template="plotly_dark",
-                       color_discrete_sequence=["rgba(0, 229, 255, 0.3)", "#FF4081"],
-                       labels={"value": "Demand (MW)", "variable": "Metric"})
+        fig1 = px.line(
+            plot_data, x="Date", y=["Demand_MW", "Smoothed_Demand"], template="plotly_dark",
+            color_discrete_sequence=["rgba(0, 229, 255, 0.3)", "#FF4081"],
+            labels={"Date": "Date", "value": "Demand (MW)", "variable": "Metric"}
+        )
         fig1.update_layout(hovermode="x unified", legend_title="")
         st.plotly_chart(fig1, use_container_width=True)
 
         col_trend1, col_trend2 = st.columns(2)
         with col_trend1:
-            st.subheader(f"Growth Trends ({time_group})")
-            fig_growth = px.bar(agg_data, x="Date", y="Period_Growth_%", template="plotly_dark",
-                                 color="Period_Growth_%", color_continuous_scale="RdBu_r")
+            st.subheader(f"Growth Trends ({time_group})", help="Tracks the percentage change in energy demand compared to the previous period.")
+            fig_growth = px.bar(
+                agg_data, x="Date", y="Period_Growth_%", template="plotly_dark",
+                color="Period_Growth_%", color_continuous_scale="RdBu_r",
+                labels={"Date": "Date", "Period_Growth_%": "Growth (%)"}
+            )
             fig_growth.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
             st.plotly_chart(fig_growth, use_container_width=True)
 
         with col_trend2:
-            st.subheader("Average Demand by Day of Week")
+            st.subheader("Average Demand by Day of Week", help="Averages all data by the day of the week to reveal cyclical routines.")
             dow_df = daily_agg.copy()
             dow_df['DayOfWeek'] = dow_df['Date'].dt.day_name()
             dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
             dow_demand = dow_df.groupby('DayOfWeek')['Demand_MW'].mean().reindex(dow_order).reset_index()
             
-            fig_dow = px.bar(dow_demand, x="DayOfWeek", y="Demand_MW", template="plotly_dark", 
-                             color_discrete_sequence=["#B388FF"], text_auto=".2s")
+            fig_dow = px.bar(
+                dow_demand, x="DayOfWeek", y="Demand_MW", template="plotly_dark", 
+                color_discrete_sequence=["#B388FF"], text_auto=".2s",
+                labels={"DayOfWeek": "Day of the Week", "Demand_MW": "Average Demand (MW)"}
+            )
             st.plotly_chart(fig_dow, use_container_width=True)
 
     # ---- TAB 2: SEASONALITY & YTD ----
@@ -250,24 +275,29 @@ def main():
         col_seas1, col_seas2 = st.columns(2)
         
         with col_seas1:
-            st.subheader("Cumulative YTD Trajectory")
+            st.subheader("Cumulative YTD Trajectory", help="Tracks the running total of energy consumed, starting from zero on January 1st.")
             daily_agg['Year_Str'] = daily_agg['Year'].astype(str)
-            fig_ytd = px.line(daily_agg, x="DayOfYear", y="Cumulative_Demand", color="Year_Str", 
-                              template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig_ytd.update_layout(xaxis_title="Day of Year", yaxis_title="Total MW Consumed")
+            fig_ytd = px.line(
+                daily_agg, x="DayOfYear", y="Cumulative_Demand", color="Year_Str", 
+                template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel,
+                labels={"DayOfYear": "Day of the Year", "Cumulative_Demand": "Cumulative Demand (MW)", "Year_Str": "Year"}
+            )
             st.plotly_chart(fig_ytd, use_container_width=True)
 
         with col_seas2:
-            st.subheader("Year-over-Year (YoY) Overlay")
+            st.subheader("Year-over-Year (YoY) Overlay", help="Aligns multiple years on a single 365-day axis to compare seasonal peaks.")
             yoy_df = daily_agg.copy()
             yoy_df['DummyDate'] = yoy_df['Date'].apply(lambda d: d.replace(year=2024))
-            fig_yoy = px.line(yoy_df, x="DummyDate", y="Demand_MW", color="Year_Str", 
-                              template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Set2)
-            fig_yoy.update_layout(xaxis_tickformat="%b %d", xaxis_title="Time of Year", yaxis_title="Daily Demand (MW)")
+            fig_yoy = px.line(
+                yoy_df, x="DummyDate", y="Demand_MW", color="Year_Str", 
+                template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Set2,
+                labels={"DummyDate": "Time of Year", "Demand_MW": "Daily Demand (MW)", "Year_Str": "Year"}
+            )
+            fig_yoy.update_layout(xaxis_tickformat="%b %d")
             st.plotly_chart(fig_yoy, use_container_width=True)
 
         st.divider()
-        st.subheader("Seasonal Heatmap (Usage Patterns)")
+        st.subheader("Seasonal Heatmap (Usage Patterns)", help="Displays the intensity of energy usage. Brighter colors indicate periods of high demand.")
         heat_df = daily_agg.copy()
         heat_df['Month'] = heat_df['Date'].dt.month_name()
         heat_df['DOW'] = heat_df['Date'].dt.day_name()
@@ -275,38 +305,81 @@ def main():
         month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
         dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         
-        fig_heat = px.density_heatmap(heat_df, x="Month", y="DOW", z="Demand_MW", histfunc="avg",
-                                      template="plotly_dark", color_continuous_scale="Viridis",
-                                      category_orders={"Month": month_order, "DOW": dow_order[::-1]})
+        fig_heat = px.density_heatmap(
+            heat_df, x="Month", y="DOW", z="Demand_MW", histfunc="avg",
+            template="plotly_dark", color_continuous_scale="Viridis",
+            category_orders={"Month": month_order, "DOW": dow_order[::-1]},
+            labels={"Month": "Month of Year", "DOW": "Day of the Week", "Demand_MW": "Average Demand (MW)"}
+        )
         st.plotly_chart(fig_heat, use_container_width=True)
 
     # ---- TAB 3: REGIONAL MATRIX ----
     with tab3:
-        st.subheader("Total Demand by Region")
-        region_demand = tz_df.groupby("Region")["Demand_MW"].sum().reset_index().sort_values("Demand_MW")
-        fig_reg_bar = px.bar(region_demand, x="Demand_MW", y="Region", orientation="h", template="plotly_dark", 
-                             color_discrete_sequence=["#FF4081"], text_auto=".2s")
-        st.plotly_chart(fig_reg_bar, use_container_width=True)
+        st.subheader("Total Demand by Region", help="Interactive map showing the geographic distribution of energy demand across the United States.")
+        
+        state_mapping = pd.DataFrame([
+            {"State": "WA", "Region": "Pacific"}, {"State": "OR", "Region": "Pacific"}, {"State": "CA", "Region": "Pacific"}, {"State": "NV", "Region": "Pacific"},
+            {"State": "MT", "Region": "Mountain"}, {"State": "ID", "Region": "Mountain"}, {"State": "WY", "Region": "Mountain"}, {"State": "UT", "Region": "Mountain"}, {"State": "CO", "Region": "Mountain"}, {"State": "NM", "Region": "Mountain"},
+            {"State": "AZ", "Region": "Arizona"},
+            {"State": "ND", "Region": "Central"}, {"State": "SD", "Region": "Central"}, {"State": "NE", "Region": "Central"}, {"State": "KS", "Region": "Central"}, {"State": "OK", "Region": "Central"}, {"State": "TX", "Region": "Central"}, {"State": "MN", "Region": "Central"}, {"State": "IA", "Region": "Central"}, {"State": "MO", "Region": "Central"}, {"State": "AR", "Region": "Central"}, {"State": "LA", "Region": "Central"}, {"State": "WI", "Region": "Central"}, {"State": "IL", "Region": "Central"}, {"State": "TN", "Region": "Central"}, {"State": "MS", "Region": "Central"}, {"State": "AL", "Region": "Central"},
+            {"State": "MI", "Region": "Eastern"}, {"State": "IN", "Region": "Eastern"}, {"State": "OH", "Region": "Eastern"}, {"State": "KY", "Region": "Eastern"}, {"State": "GA", "Region": "Eastern"}, {"State": "FL", "Region": "Eastern"}, {"State": "SC", "Region": "Eastern"}, {"State": "NC", "Region": "Eastern"}, {"State": "VA", "Region": "Eastern"}, {"State": "WV", "Region": "Eastern"}, {"State": "MD", "Region": "Eastern"}, {"State": "DE", "Region": "Eastern"}, {"State": "PA", "Region": "Eastern"}, {"State": "NJ", "Region": "Eastern"}, {"State": "NY", "Region": "Eastern"}, {"State": "CT", "Region": "Eastern"}, {"State": "RI", "Region": "Eastern"}, {"State": "MA", "Region": "Eastern"}, {"State": "VT", "Region": "Eastern"}, {"State": "NH", "Region": "Eastern"}, {"State": "ME", "Region": "Eastern"},
+            {"State": "AK", "Region": "Alaska"}, {"State": "HI", "Region": "Hawaii"} 
+        ])
+
+        region_demand = tz_df.groupby("Region")["Demand_MW"].sum().reset_index()
+        map_df = pd.merge(state_mapping, region_demand, on="Region", how="left")
+        
+        if map_df["Demand_MW"].dropna().empty:
+            st.info("No geographical data available for the current filter selection.")
+        else:
+            fig_map = px.choropleth(
+                map_df, 
+                locations="State", 
+                locationmode="USA-states", 
+                color="Demand_MW", 
+                hover_name="Region",
+                hover_data={"State": False},  # <--- Hides the misleading "State=OK" line
+                scope="usa", 
+                template="plotly_dark", 
+                color_continuous_scale="Viridis",
+                labels={"Demand_MW": "Regional Total (MW)"} # <--- Clarifies the metric is for the whole zone
+            )
+            fig_map.update_layout(geo=dict(bgcolor='rgba(0,0,0,0)', lakecolor='rgba(0,0,0,0)'), margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig_map, use_container_width=True)
+
+        st.divider()
 
         col_reg1, col_reg2 = st.columns(2)
         with col_reg1:
-            st.subheader("Regional Volatility (Box Plot)")
-            fig_box_reg = px.box(tz_df, x="Region", y="Demand_MW", color="Region", template="plotly_dark")
-            fig_box_reg.update_layout(showlegend=False)
-            st.plotly_chart(fig_box_reg, use_container_width=True)
+            st.subheader("Regional Volatility (Box Plot)", help="Shows the spread of daily demand. The box is the middle 50% of days; dots are outliers.")
+            if not tz_df.empty:
+                fig_box_reg = px.box(
+                    tz_df, x="Region", y="Demand_MW", color="Region", template="plotly_dark",
+                    labels={"Region": "Timezone Region", "Demand_MW": "Daily Demand (MW)"}
+                )
+                fig_box_reg.update_layout(showlegend=False)
+                st.plotly_chart(fig_box_reg, use_container_width=True)
 
         with col_reg2:
-            st.subheader("Grid Stress (Regional Correlation)")
-            pivot_tz = tz_df.pivot_table(index="Date", columns="Region", values="Demand_MW", aggfunc="sum")
-            fig_corr = px.imshow(pivot_tz.corr(), text_auto=".2f", aspect="auto", template="plotly_dark", color_continuous_scale="RdBu_r")
-            st.plotly_chart(fig_corr, use_container_width=True)
+            st.subheader("Grid Stress (Regional Correlation)", help="A value close to 1 indicates regions peak simultaneously, straining shared infrastructure.")
+            if not tz_df.empty:
+                if len(tz_df["Region"].unique()) > 1:
+                    pivot_tz = tz_df.pivot_table(index="Date", columns="Region", values="Demand_MW", aggfunc="sum")
+                    fig_corr = px.imshow(
+                        pivot_tz.corr(), text_auto=".2f", aspect="auto", template="plotly_dark", 
+                        color_continuous_scale="RdBu_r",
+                        labels=dict(x="Region", y="Region", color="Correlation")
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                else:
+                    st.info("Select at least 2 regions to view grid stress correlation.")
 
     # ---- TAB 4: COMPANY / MARKET SHARE ----
     with tab4:
         col_comp1, col_comp2 = st.columns([2, 1])
 
         with col_comp1:
-            st.subheader("Demand Contribution by Top Respondents")
+            st.subheader("Demand Contribution by Top Respondents", help="A stacked area chart showing absolute MW contributed by the top 8 utilities.")
             pivot_resp = resp_df.pivot_table(index="Date", columns="Company", values="Demand_MW", aggfunc="sum").fillna(0)
             if not pivot_resp.empty:
                 top_companies = pivot_resp.sum().sort_values(ascending=False).head(8).index
@@ -314,12 +387,16 @@ def main():
                 top_df["Others"] = pivot_resp.drop(columns=top_companies, errors='ignore').sum(axis=1)
                 top_df = top_df.reset_index()
                 
-                fig_area = px.area(top_df, x="Date", y=top_df.columns[1:], template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Pastel)
-                fig_area.update_layout(yaxis_title="Demand (MW)", hovermode="x unified")
+                fig_area = px.area(
+                    top_df, x="Date", y=top_df.columns[1:], template="plotly_dark", 
+                    color_discrete_sequence=px.colors.qualitative.Pastel,
+                    labels={"Date": "Date", "value": "Demand (MW)", "variable": "Company"}
+                )
+                fig_area.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_area, use_container_width=True)
 
         with col_comp2:
-            st.subheader("Market Share")
+            st.subheader("Market Share", help="Proportional breakdown of the total energy supplied by the top 8 respondents.")
             company_shares = resp_df.groupby("Company")["Demand_MW"].sum().sort_values(ascending=False)
             if not company_shares.empty:
                 top_shares = company_shares.head(8)
@@ -331,47 +408,53 @@ def main():
                 fig_pie.update_layout(showlegend=False)
                 st.plotly_chart(fig_pie, use_container_width=True)
             
-        st.subheader("Company Volatility")
+        st.subheader("Company Volatility", help="Highlights daily variance. Utilities with large boxes experience unpredictable demand.")
         if not pivot_resp.empty:
             top_resp_df = resp_df[resp_df["Company"].isin(top_companies)]
-            fig_box_comp = px.box(top_resp_df, x="Company", y="Demand_MW", color="Company", template="plotly_dark")
+            fig_box_comp = px.box(
+                top_resp_df, x="Company", y="Demand_MW", color="Company", template="plotly_dark",
+                labels={"Company": "Utility Respondent", "Demand_MW": "Daily Demand (MW)"}
+            )
             fig_box_comp.update_layout(showlegend=False)
             st.plotly_chart(fig_box_comp, use_container_width=True)
 
     # ---- TAB 5: GRID PHYSICS & ANOMALIES ----
     with tab5:
-        st.subheader(f"Automated Anomaly Detection ({analysis_mode.split(' ')[0]} Data)")
+        st.subheader(f"Automated Anomaly Detection ({analysis_mode.split(' ')[0]} Data)", help="A red dot appears when demand exceeds 3 standard deviations from the 30-day moving average.")
         fig_anom = go.Figure()
         fig_anom.add_trace(go.Scatter(x=daily_agg["Date"], y=daily_agg["Demand_MW"], name="Standard Demand", line=dict(color="#00E5FF")))
         
         anomalies = daily_agg[daily_agg["is_anomaly"]]
         fig_anom.add_trace(go.Scatter(x=anomalies["Date"], y=anomalies["Demand_MW"], mode="markers", 
-                                     name="Anomaly (>3 Std Dev)", marker=dict(color="red", size=8)))
-        fig_anom.update_layout(template="plotly_dark", hovermode="x unified")
+                                      name="Anomaly (>3 Std Dev)", marker=dict(color="red", size=8)))
+        fig_anom.update_layout(template="plotly_dark", hovermode="x unified", xaxis_title="Date", yaxis_title="Demand (MW)")
         st.plotly_chart(fig_anom, use_container_width=True)
 
         col_phys1, col_phys2 = st.columns(2)
         with col_phys1:
-            st.subheader("Load Duration Curve (LDC)")
-            st.caption("Percentage of time demand exceeds a given level.")
+            st.subheader("Load Duration Curve (LDC)", help="Sorts all days from highest to lowest demand to find Base Load vs Peaking generation needs.")
             ldc_data = daily_agg["Demand_MW"].sort_values(ascending=False).values
             if len(ldc_data) > 0:
                 ldc_p = np.linspace(0, 100, len(ldc_data))
-                fig_ldc = px.line(x=ldc_p, y=ldc_data, template="plotly_dark", color_discrete_sequence=["#FF4081"], labels={"x": "% of Time", "y": "Demand (MW)"})
+                fig_ldc = px.line(
+                    x=ldc_p, y=ldc_data, template="plotly_dark", color_discrete_sequence=["#FF4081"], 
+                    labels={"x": "Percentage of Time (%)", "y": "Demand (MW)"}
+                )
                 fig_ldc.add_hline(y=ldc_data.min(), line_dash="dash", annotation_text="Base Load")
                 st.plotly_chart(fig_ldc, use_container_width=True)
 
         with col_phys2:
-            st.subheader("Day-to-Day Ramp Rates")
-            st.caption("Absolute change in demand from the previous day.")
-            fig_ramp = px.bar(daily_agg, x="Date", y="ramp_rate", template="plotly_dark", color="ramp_rate", color_continuous_scale="RdBu_r")
-            fig_ramp.update_layout(yaxis_title="MW Change vs Previous Day")
+            st.subheader("Day-to-Day Ramp Rates", help="Tracks the absolute change in energy demand from the previous day.")
+            fig_ramp = px.bar(
+                daily_agg, x="Date", y="ramp_rate", template="plotly_dark", color="ramp_rate", 
+                color_continuous_scale="RdBu_r",
+                labels={"Date": "Date", "ramp_rate": "Ramp Rate (MW Change)"}
+            )
             st.plotly_chart(fig_ramp, use_container_width=True)
 
     # ---- TAB 6: DATA EXPORT ----
     with tab6:
-        st.subheader("Raw Data Export")
-        st.write("Download the filtered dataset based on your sidebar selections.")
+        st.subheader("Raw Data Export", help="Download the raw CSV files tailored to your current filter selections.")
         
         col_data1, col_data2 = st.columns(2)
         with col_data1:
@@ -384,7 +467,8 @@ def main():
             csv_tz = tz_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Timezone Data (CSV)", data=csv_tz, file_name="filtered_timezone_data.csv", mime="text/csv")
 
-        st.subheader("Data Quality Report")
+        st.divider()
+        st.subheader("Data Quality Report", help="Review missing values and outliers detected and handled during data preprocessing.")
 
         col_q1, col_q2, col_q3 = st.columns(3)
 
@@ -393,60 +477,54 @@ def main():
         col_q3.metric("Remaining Missing", int(resp_stats["missing_after"].sum()))
 
         with st.expander("Detailed Respondent Data Quality"):
-            st.dataframe(resp_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
+            st.dataframe(resp_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"), width="stretch")
 
             selected_company = st.selectbox(
                 "Select Company to View Affected Dates",
-                resp_stats["Company"]
+                resp_stats["Company"],
+                help="Select a specific company to see exactly which dates had missing data or statistical outliers."
             )
 
             row = resp_stats[resp_stats["Company"] == selected_company].iloc[0]
-
             st.write("**Missing Dates:**")
             st.write(row["missing_dates"] if row["missing_dates"] else "None")
-
             st.write("**Outlier Dates:**")
             st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
 
         with st.expander("Detailed Region Data Quality"):
-            st.dataframe(tz_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"),width="stretch")
+            st.dataframe(tz_stats.drop(columns=["missing_dates", "outlier_dates"], errors="ignore"), width="stretch")
 
             selected_region = st.selectbox(
                 "Select Region to View Affected Dates",
-                tz_stats["Region"]
+                tz_stats["Region"],
+                help="Select a specific region to see exactly which dates had missing data or statistical outliers."
             )
 
             row = tz_stats[tz_stats["Region"] == selected_region].iloc[0]
-
             st.write("**Missing Dates:**")
             st.write(row["missing_dates"] if row["missing_dates"] else "None")
-
             st.write("**Outlier Dates:**")
             st.write(row["outlier_dates"] if row["outlier_dates"] else "None")
 
         resp_stats_export = resp_stats.copy()
         resp_stats_export["missing_dates"] = resp_stats_export["missing_dates"].apply(lambda x: ",".join(x))
         resp_stats_export["outlier_dates"] = resp_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
-        quality_csv = resp_stats_export.to_csv(index=False).encode('utf-8')
-
         st.download_button(
             "Download Data Quality Report (Respondent)",
-            data=quality_csv,
+            data=resp_stats_export.to_csv(index=False).encode('utf-8'),
             file_name="data_quality_respondent.csv",
             mime="text/csv"
         )
+        
         tz_stats_export = tz_stats.copy()
         tz_stats_export["missing_dates"] = tz_stats_export["missing_dates"].apply(lambda x: ",".join(x))
         tz_stats_export["outlier_dates"] = tz_stats_export["outlier_dates"].apply(lambda x: ",".join(x))
-        quality_csv_tz = tz_stats_export.to_csv(index=False).encode('utf-8')
-
         st.download_button(
             "Download Data Quality Report (Region)",
-            data=quality_csv_tz,
+            data=tz_stats_export.to_csv(index=False).encode('utf-8'),
             file_name="data_quality_region.csv",
             mime="text/csv"
         )
-
 
 if __name__ == "__main__":
     main()
