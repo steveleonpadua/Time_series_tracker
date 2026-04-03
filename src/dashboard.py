@@ -232,18 +232,35 @@ def main():
     # ---- TAB 1: TRENDS & GROWTH ----
     with tab1:
         st.subheader(f"Aggregate Demand ({time_group})", help="Visualizes total energy demand over time based on your selected aggregation level.")
-        window = st.slider("Smoothing Window (Moving Average)", min_value=1, max_value=30, value=7)
-        
+                
         plot_data = agg_data.copy()
-        plot_data["Smoothed_Demand"] = plot_data["Demand_MW"].rolling(window, min_periods=1).mean()
+        # --- Smoothing Controls ---
+        window = st.slider("Rolling Window", 1, 30, 7)
+        alpha = st.slider("EWMA Alpha (Responsiveness)", 0.1, 1.0, 0.3)
+
+        plot_data = agg_data.copy()
+
+        # Rolling Mean
+        plot_data["Rolling_Mean"] = plot_data["Demand_MW"].rolling(window, min_periods=1).mean()
+
+        # Exponentially Weighted Mean
+        plot_data["EWMA"] = plot_data["Demand_MW"].ewm(alpha=alpha, adjust=False).mean()
         
         fig1 = px.line(
-            plot_data, x="Date", y=["Demand_MW", "Smoothed_Demand"], template="plotly_dark",
-            color_discrete_sequence=["rgba(0, 229, 255, 0.3)", "#FF4081"],
-            labels={"Date": "Date", "value": "Demand (MW)", "variable": "Metric"}
+            plot_data,
+            x="Date",
+            y=["Demand_MW", "Rolling_Mean", "EWMA"],
+            template="plotly_dark",
+            color_discrete_sequence=["rgba(0,229,255,0.3)", "#FF4081", "#FFD740"],
+            labels={"value": "Demand (MW)", "variable": "Metric"}
         )
-        fig1.update_layout(hovermode="x unified", legend_title="")
-        st.plotly_chart(fig1, use_container_width=True)
+
+        fig1.update_layout(
+            hovermode="x unified",
+            legend_title="Smoothing Method"
+        )
+
+        st.plotly_chart(fig1, width="stretch")
 
         col_trend1, col_trend2 = st.columns(2)
         with col_trend1:
